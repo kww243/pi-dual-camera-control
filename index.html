@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14251f">
+  <title>雙樹莓派藍牙同步錄影</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101b18; --panel:#192823; --panel2:#20352e; --line:#345047; --text:#edf5ef; --muted:#a7bbb0; --mint:#8ce0b5; --orange:#ffc27d; --red:#ff908b; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(ellipse at 10% 0%,#203d32 0,transparent 42%),var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,"Noto Sans TC",sans-serif; }
+    main { width:min(920px,100%); margin:auto; padding:30px 18px 60px; }
+    header { margin-bottom:24px; }
+    .eyebrow { color:var(--mint); font-size:13px; letter-spacing:.12em; font-weight:700; text-transform:uppercase; }
+    h1 { margin:8px 0; font-size:clamp(27px,6vw,42px); line-height:1.15; }
+    p { color:var(--muted); margin:7px 0; }
+    .notice { background:#322b1e; border:1px solid #675334; color:#ffe2b7; padding:13px 15px; border-radius:12px; margin:18px 0 22px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .card { background:linear-gradient(145deg,var(--panel2),var(--panel)); border:1px solid var(--line); border-radius:18px; padding:20px; }
+    .card h2 { font-size:19px; margin:0 0 4px; }
+    .device-name { color:var(--muted); font-size:13px; margin:0 0 17px; }
+    .state { min-height:42px; padding:10px 12px; border-radius:10px; background:#12201b; border:1px solid #2d443b; color:var(--muted); font-size:14px; overflow-wrap:anywhere; }
+    .controls { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+    button,select { border:0; border-radius:11px; padding:12px 16px; font:inherit; font-weight:700; }
+    button { background:var(--mint); color:#10231a; cursor:pointer; }
+    button.secondary { background:#30483f; color:var(--text); border:1px solid #496459; }
+    button.danger { background:#572c2a; color:#ffd7d4; border:1px solid #864540; }
+    button:disabled,select:disabled { opacity:.45; cursor:not-allowed; }
+    .run-card { margin-top:14px; }
+    .row { display:flex; flex-wrap:wrap; gap:13px; align-items:end; }
+    label { display:grid; gap:6px; color:var(--muted); font-size:14px; }
+    select { min-width:150px; background:#12201b; color:var(--text); border:1px solid var(--line); }
+    .wide { flex:1; min-width:220px; }
+    #log { margin-top:15px; background:#0b1411; border:1px solid #263b33; border-radius:12px; padding:12px; height:145px; overflow:auto; white-space:pre-wrap; color:#c5d7cc; font:13px/1.55 ui-monospace,Consolas,monospace; }
+    .foot { margin-top:18px; font-size:13px; }
+    @media (max-width:650px) { main{padding:23px 14px 40px}.grid{grid-template-columns:1fr}.card{padding:17px}button{min-height:46px} }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">Bluetooth LE · Dual camera</div>
+      <h1>雙樹莓派同步錄影</h1>
+      <p>用 Android Chrome 連接正面與側面樹莓派，先同步時鐘，再預約同一時間開始錄影。</p>
+    </header>
+
+    <div id="browserNotice" class="notice" hidden></div>
+
+    <section class="grid" aria-label="藍牙設備">
+      <article class="card">
+        <h2>正面相機</h2>
+        <div class="device-name">藍牙名稱需以 KNEE-FRONT 開頭</div>
+        <div id="frontState" class="state">尚未連線</div>
+        <div class="controls"><button id="frontConnect" type="button">連接正面 Pi</button><button id="frontDisconnect" class="secondary" type="button" disabled>中斷</button></div>
+      </article>
+      <article class="card">
+        <h2>側面相機</h2>
+        <div class="device-name">藍牙名稱需以 KNEE-SIDE 開頭</div>
+        <div id="sideState" class="state">尚未連線</div>
+        <div class="controls"><button id="sideConnect" type="button">連接側面 Pi</button><button id="sideDisconnect" class="secondary" type="button" disabled>中斷</button></div>
+      </article>
+    </section>
+
+    <section class="card run-card">
+      <div class="row">
+        <label>錄影長度
+          <select id="duration">
+            <option value="10">10 秒</option><option value="20">20 秒</option><option value="30" selected>30 秒</option><option value="60">60 秒</option>
+          </select>
+        </label>
+        <div class="wide"><strong>開始方式</strong><p>兩台都回覆已連線後，網頁會估算各自時鐘差，預約約 8 秒後開始。</p></div>
+        <div class="controls"><button id="start" type="button" disabled>同步開始錄影</button><button id="stop" class="danger" type="button" disabled>停止兩台</button></div>
+      </div>
+      <div id="log" role="log" aria-live="polite">尚未執行指令。</div>
+    </section>
+    <p class="foot">藍牙只傳控制指令；影片會分別存在兩台樹莓派的 videos 資料夾。為保留錄影檔，請等兩台顯示完成後再中斷連線。</p>
+  </main>
+
+  <script>
+    'use strict';
+    const SERVICE_UUID = '6f1d0001-7a4b-4e6c-9b12-5a4f4b454550';
+    const COMMAND_UUID = '6f1d0002-7a4b-4e6c-9b12-5a4f4b454550';
+    const STATUS_UUID  = '6f1d0003-7a4b-4e6c-9b12-5a4f4b454550';
+    const CLOCK_UUID   = '6f1d0004-7a4b-4e6c-9b12-5a4f4b454550';
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const peers = { front:null, side:null };
+    let activeSession = null;
+    let statusTimer = null;
+
+    const roles = {
+      front:{ prefix:'KNEE-FRONT', label:'正面' },
+      side:{ prefix:'KNEE-SIDE', label:'側面' }
+    };
+    const byId = id => document.getElementById(id);
+    function log(message) {
+      const box = byId('log');
+      const stamp = new Date().toLocaleTimeString();
+      box.textContent += '\n[' + stamp + '] ' + message;
+      box.scrollTop = box.scrollHeight;
+    }
+    function setState(role, text) { byId(role + 'State').textContent = text; }
+    function connected(role) { return !!(peers[role] && peers[role].device.gatt.connected); }
+    function refreshButtons() {
+      for (const role of ['front','side']) {
+        byId(role + 'Connect').disabled = connected(role);
+        byId(role + 'Disconnect').disabled = !connected(role);
+      }
+      const both = connected('front') && connected('side');
+      byId('start').disabled = !both || !!activeSession;
+      byId('stop').disabled = !activeSession;
+      byId('duration').disabled = !!activeSession;
+    }
+    function textFromView(view) {
+      return decoder.decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)).trim();
+    }
+    async function writeCommand(peer, command) {
+      const data = encoder.encode(command);
+      if (peer.command.writeValueWithResponse) await peer.command.writeValueWithResponse(data);
+      else await peer.command.writeValue(data);
+    }
+    async function readStatus(peer) { return textFromView(await peer.status.readValue()); }
+    const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function connectRole(role) {
+      if (!navigator.bluetooth) throw new Error('這個瀏覽器沒有 Web Bluetooth。請用 Android Chrome，並以 HTTPS 網址開啟本頁。');
+      const config = roles[role];
+      const device = await navigator.bluetooth.requestDevice({
+        filters:[{namePrefix:config.prefix}],
+        optionalServices:[SERVICE_UUID]
+      });
+      if (!device.name || !device.name.startsWith(config.prefix)) throw new Error('選到的設備名稱不符，請選擇 ' + config.prefix + ' 開頭的樹莓派。');
+      setState(role, '連線中：' + device.name);
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      const peer = {
+        device,
+        command:await service.getCharacteristic(COMMAND_UUID),
+        status:await service.getCharacteristic(STATUS_UUID),
+        clock:await service.getCharacteristic(CLOCK_UUID)
+      };
+      peers[role] = peer;
+      device.addEventListener('gattserverdisconnected', () => {
+        peers[role] = null;
+        setState(role, '已中斷連線');
+        refreshButtons();
+        log(config.label + '樹莓派藍牙中斷。');
+      });
+      setState(role, device.name + ' · ' + await readStatus(peer));
+      log('已連接' + config.label + '樹莓派：' + device.name);
+      refreshButtons();
+    }
+
+    async function estimateClockOffset(peer) {
+      const samples = [];
+      for (let i = 0; i < 7; i++) {
+        const before = Date.now();
+        const value = textFromView(await peer.clock.readValue());
+        const after = Date.now();
+        const match = /^TIME\|(\d+)$/.exec(value);
+        if (match) {
+          const piTime = Number(match[1]);
+          samples.push({ rtt:after-before, offset:piTime-((before+after)/2) });
+        }
+        await pause(60);
+      }
+      if (!samples.length) throw new Error('無法讀取樹莓派時鐘；請確認 Pi 端控制程式版本。');
+      samples.sort((a,b) => a.rtt-b.rtt);
+      return samples[0].offset;
+    }
+
+    async function pollStatuses() {
+      for (const role of ['front','side']) {
+        const peer = peers[role];
+        if (!peer || !peer.device.gatt.connected) continue;
+        try { setState(role, peer.device.name + ' · ' + await readStatus(peer)); }
+        catch (error) { setState(role, '狀態讀取失敗：' + error.message); }
+      }
+      if (!activeSession) return;
+      const states = await Promise.all(['front','side'].map(async role => {
+        const peer = peers[role];
+        if (!peer || !peer.device.gatt.connected) return 'DISCONNECTED';
+        try { return await readStatus(peer); } catch (_) { return 'UNKNOWN'; }
+      }));
+      if (states.every(value => value.startsWith('DONE|') || value.startsWith('STOPPED'))) {
+        log('兩台樹莓派都已完成。請檢查各自的 videos 資料夾。');
+        activeSession = null;
+        refreshButtons();
+        if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+      }
+    }
+
+    async function startPair() {
+      const front = peers.front;
+      const side = peers.side;
+      if (!front || !side || !front.device.gatt.connected || !side.device.gatt.connected) return;
+      byId('start').disabled = true;
+      try {
+        log('正在透過藍牙估算兩台樹莓派的時鐘差…');
+        const offsets = await Promise.all([estimateClockOffset(front), estimateClockOffset(side)]);
+        const durationMs = Number(byId('duration').value) * 1000;
+        const phoneStartAt = Date.now() + 8000;
+        const session = new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,17);
+        const commands = [front,side].map((peer,index) => {
+          const piStartAt = Math.round(phoneStartAt + offsets[index]);
+          return writeCommand(peer, 'ARM|' + session + '|' + durationMs + '|' + piStartAt);
+        });
+        const results = await Promise.allSettled(commands);
+        if (results.some(result => result.status === 'rejected')) {
+          await Promise.allSettled([front,side].map(peer => writeCommand(peer, 'STOP|' + session)));
+          throw new Error('至少一台沒有接受預約；已送出取消指令。請確認兩台狀態後再試。');
+        }
+        activeSession = session;
+        log('兩台均已收到預約。預計手機時間 ' + new Date(phoneStartAt).toLocaleTimeString() + ' 開始；時鐘差估算約 ' + Math.round(offsets[0]) + ' ms / ' + Math.round(offsets[1]) + ' ms。');
+        refreshButtons();
+        if (statusTimer) clearInterval(statusTimer);
+        statusTimer = setInterval(pollStatuses, 1000);
+        await pollStatuses();
+      } catch (error) {
+        log('開始失敗：' + error.message);
+        refreshButtons();
+      }
+    }
+
+    async function stopPair() {
+      if (!activeSession) return;
+      const session = activeSession;
+      const sends = ['front','side'].map(role => {
+        const peer = peers[role];
+        return peer && peer.device.gatt.connected ? writeCommand(peer, 'STOP|' + session) : Promise.resolve();
+      });
+      await Promise.allSettled(sends);
+      log('已送出停止指令。請等兩台狀態更新並完成寫檔。');
+      byId('stop').disabled = true;
+    }
+
+    function disconnectRole(role) {
+      if (activeSession) { log('錄影進行中，請先停止或等候完成，再中斷藍牙。'); return; }
+      const peer = peers[role];
+      if (peer && peer.device.gatt.connected) peer.device.gatt.disconnect();
+    }
+
+    for (const role of ['front','side']) {
+      byId(role + 'Connect').addEventListener('click', async () => {
+        try { await connectRole(role); }
+        catch (error) { setState(role, '連線失敗：' + error.message); log(roles[role].label + '連線失敗：' + error.message); }
+        refreshButtons();
+      });
+      byId(role + 'Disconnect').addEventListener('click', () => disconnectRole(role));
+    }
+    byId('start').addEventListener('click', startPair);
+    byId('stop').addEventListener('click', stopPair);
+
+    if (!window.isSecureContext || !navigator.bluetooth) {
+      const notice = byId('browserNotice');
+      notice.hidden = false;
+      notice.textContent = '目前頁面無法使用 Web Bluetooth。請在 Android 手機的 Chrome 中，以 HTTPS 網址開啟；直接用一般 HTTP 網址或部分內建瀏覽器會被封鎖。';
+    }
+  </script>
+</body>
+</html>
