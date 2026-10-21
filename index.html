@@ -199,7 +199,7 @@
         log('正在透過藍牙估算兩台樹莓派的時鐘差…');
         const offsets = await Promise.all([estimateClockOffset(front), estimateClockOffset(side)]);
         const durationMs = Number(byId('duration').value) * 1000;
-        const phoneStartAt = Date.now() + 8000;
+        const phoneStartAt = Date.now() + 15000;
         const session = new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,17);
         const commands = [front,side].map((peer,index) => {
           const piStartAt = Math.round(phoneStartAt + offsets[index]);
