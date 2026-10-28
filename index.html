@@ -91,8 +91,9 @@
         <h2>正面 Pi 數據</h2>
         <div class="device-name">正面視角膝角度</div>
         <div class="metric">
-          <div class="metric-item"><div class="metric-label">坐站次數（側面判定）</div><div id="frontCount" class="metric-value">--</div></div>
-          <div class="metric-item"><div class="metric-label">最近角度</div><div id="frontAngle" class="metric-value">-- <span class="unit">°</span></div></div>
+          <div class="metric-item" style="grid-column:1/-1"><div class="metric-label">完整坐站循環（側面判定）</div><div id="frontCount" class="metric-value">--</div></div>
+          <div class="metric-item"><div class="metric-label">最大角度</div><div id="frontMaxAngle" class="metric-value">-- <span class="unit">°</span></div></div>
+          <div class="metric-item"><div class="metric-label">最小角度</div><div id="frontMinAngle" class="metric-value">-- <span class="unit">°</span></div></div>
         </div>
         <p id="frontResultState">坐站次數由側面 Pi 判定；正面 Pi 提供角度資料。</p>
       </article>
@@ -100,15 +101,16 @@
         <h2>側面 Pi 數據</h2>
         <div class="device-name">側面視角膝角度與坐站判定</div>
         <div class="metric">
-          <div class="metric-item"><div class="metric-label">坐站次數</div><div id="sideCount" class="metric-value">--</div></div>
-          <div class="metric-item"><div class="metric-label">最近角度</div><div id="sideAngle" class="metric-value">-- <span class="unit">°</span></div></div>
+          <div class="metric-item" style="grid-column:1/-1"><div class="metric-label">完整坐站循環</div><div id="sideCount" class="metric-value">--</div></div>
+          <div class="metric-item"><div class="metric-label">最大角度</div><div id="sideMaxAngle" class="metric-value">-- <span class="unit">°</span></div></div>
+          <div class="metric-item"><div class="metric-label">最小角度</div><div id="sideMinAngle" class="metric-value">-- <span class="unit">°</span></div></div>
         </div>
         <p id="sideResultState">尚無測試結果</p>
       </article>
     </section>
     <section class="card chart-card" aria-label="膝角度折線圖">
       <h2>測試後膝角度變化</h2>
-      <p class="chart-note">X 軸：測試經過時間（秒）；Y 軸：膝角度（度）。每秒取一筆角度樣本。</p>
+      <p class="chart-note">X 軸：測試經過時間（秒）；Y 軸：膝角度（度）。折線圖每秒取樣；卡片的最大、最小角度依整段測試的有效影格計算。</p>
       <div class="chart-wrap"><canvas id="angleChart" aria-label="正面與側面膝角度折線圖"></canvas></div>
       <div class="legend"><span><i style="background:#8ce0b5"></i>正面 Pi</span><span><i style="background:#ffc27d"></i>側面 Pi</span></div>
       <p id="chartState">完成測試後會在這裡顯示兩台 Pi 的角度曲線。</p>
@@ -279,13 +281,14 @@
     }
 
     function showResults(front, side) {
-      const count = Number(side.sit_to_stand || 0) + Number(side.stand_to_sit || 0);
+      const count = Math.min(Number(side.sit_to_stand || 0), Number(side.stand_to_sit || 0));
       byId('frontCount').textContent = String(count);
       byId('sideCount').textContent = String(count);
-      const frontLast = front.samples.filter(p => Number.isFinite(p.angle)).slice(-1)[0];
-      const sideLast = side.samples.filter(p => Number.isFinite(p.angle)).slice(-1)[0];
-      byId('frontAngle').innerHTML = (frontLast ? Number(frontLast.angle).toFixed(1) : '--') + ' <span class="unit">°</span>';
-      byId('sideAngle').innerHTML = (sideLast ? Number(sideLast.angle).toFixed(1) : '--') + ' <span class="unit">°</span>';
+      const angleText = value => Number.isFinite(value) ? value.toFixed(1) + ' <span class="unit">°</span>' : '-- <span class="unit">°</span>';
+      byId('frontMaxAngle').innerHTML = angleText(front.max_angle);
+      byId('frontMinAngle').innerHTML = angleText(front.min_angle);
+      byId('sideMaxAngle').innerHTML = angleText(side.max_angle);
+      byId('sideMinAngle').innerHTML = angleText(side.min_angle);
       byId('frontResultState').textContent = '坐站次數採用側面 Pi 的判定；此卡顯示正面角度。';
       byId('sideResultState').textContent = '坐下→站起：' + Number(side.sit_to_stand || 0) + '；站起→坐下：' + Number(side.stand_to_sit || 0);
       byId('chartState').textContent = '測試編號：' + front.session + '。兩條曲線各自使用該台相機的測試經過時間。';
