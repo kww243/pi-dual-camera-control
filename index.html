@@ -162,15 +162,26 @@
       else await peer.command.writeValue(data);
     }
     async function readStatus(peer) { return textFromView(await peer.status.readValue()); }
+    async function requestResultValue(peer, command) {
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await writeCommand(peer, command);
+          return textFromView(await peer.result.readValue());
+        } catch (error) {
+          lastError = error;
+          if (attempt < 2) await pause(180 * (attempt + 1));
+        }
+      }
+      throw lastError;
+    }
     async function getResult(peer, session) {
-      await writeCommand(peer, 'GET|' + session + '|META');
-      const meta = textFromView(await peer.result.readValue());
+      const meta = await requestResultValue(peer, 'GET|' + session + '|META');
       const match = /^META\|(\d+)$/.exec(meta);
       if (!match) throw new Error('結果資料中繼資訊格式錯誤：' + meta);
       let payload = '';
       for (let index = 0; index < Number(match[1]); index++) {
-        await writeCommand(peer, 'GET|' + session + '|' + index);
-        payload += textFromView(await peer.result.readValue());
+        payload += await requestResultValue(peer, 'GET|' + session + '|' + index);
       }
       const result = JSON.parse(payload);
       if (result.session !== session) throw new Error('收到的測試編號不符。');
@@ -227,6 +238,8 @@
     }
 
     async function pollStatuses() {
+      // 藍牙正在分段下載結果時，不要同時讀 STATUS，避免同一連線的 GATT 操作互相碰撞。
+      if (fetchingResults) return;
       for (const role of ['front','side']) {
         const peer = peers[role];
         if (!peer || !peer.device.gatt.connected) continue;
@@ -243,9 +256,10 @@
         fetchingResults = true;
         byId('chartState').textContent = '正在從兩台 Pi 讀取角度資料…';
         try {
-          const [frontData, sideData] = await Promise.all([
-            getResult(peers.front, activeSession), getResult(peers.side, activeSession)
-          ]);
+          // 共用一個手機藍牙介面時，逐台下載比同時大量讀取穩定。
+          const frontData = await getResult(peers.front, activeSession);
+          byId('chartState').textContent = '正面資料已讀取，正在讀取側面資料…';
+          const sideData = await getResult(peers.side, activeSession);
           showResults(frontData, sideData);
           log('兩台分析完成，角度資料已載入並繪圖。影片與 Excel 保存在各自 Pi 的資料夾。');
         } catch (error) {
