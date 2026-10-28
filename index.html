@@ -45,6 +45,13 @@
     select { min-width:150px; background:#12201b; color:var(--text); border:1px solid var(--line); }
     .wide { flex:1; min-width:220px; }
     #log { margin-top:15px; background:#0b1411; border:1px solid #263b33; border-radius:12px; padding:12px; height:145px; overflow:auto; white-space:pre-wrap; color:#c5d7cc; font:13px/1.55 ui-monospace,Consolas,monospace; }
+    .transfer-status { margin-top:14px; padding:12px; background:#10211a; border:1px solid #345047; border-radius:12px; }
+    .transfer-status strong { display:block; color:var(--mint); }
+    .transfer-status p { margin:4px 0 0; font-size:13px; }
+    .progress-track { height:8px; margin-top:10px; overflow:hidden; background:#263b33; border-radius:99px; }
+    .progress-fill { width:0; height:100%; background:var(--mint); border-radius:99px; transition:width .2s ease; }
+    .progress-track.pending .progress-fill { width:35%; animation:progress-pulse 1.2s ease-in-out infinite alternate; }
+    @keyframes progress-pulse { from { transform:translateX(-20%); } to { transform:translateX(210%); } }
     .foot { margin-top:18px; font-size:13px; }
     @media (max-width:650px) { main{padding:23px 14px 40px}.grid{grid-template-columns:1fr}.card{padding:17px}button{min-height:46px} }
   </style>
@@ -83,6 +90,11 @@
         </label>
         <div class="wide"><strong>開始方式</strong><p>兩台都回覆已連線後，網頁會估算各自時鐘差，預約約 15 秒後開始。</p></div>
         <div class="controls"><button id="start" type="button" disabled>同步開始分析</button><button id="stop" class="danger" type="button" disabled>停止兩台</button></div>
+      </div>
+      <div class="transfer-status" role="status" aria-live="polite">
+        <strong id="transferTitle">目前待命</strong>
+        <p id="transferText">開始測試後請保持此頁開啟。兩台分析完成後，網頁會自動讀取資料並繪圖。</p>
+        <div id="progressTrack" class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
       </div>
       <div id="log" role="log" aria-live="polite">尚未執行指令。</div>
     </section>
@@ -152,8 +164,15 @@
       }
       const both = connected('front') && connected('side');
       byId('start').disabled = !both || !!activeSession;
-      byId('stop').disabled = !activeSession;
+      byId('stop').disabled = !activeSession || fetchingResults;
       byId('duration').disabled = !!activeSession;
+    }
+    function updateTransfer(title, detail, percent=null, pending=false) {
+      byId('transferTitle').textContent = title;
+      byId('transferText').textContent = detail;
+      const track = byId('progressTrack');
+      track.classList.toggle('pending', pending);
+      byId('progressFill').style.width = percent === null ? '' : Math.max(0, Math.min(100, percent)) + '%';
     }
     function textFromView(view) {
       return decoder.decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)).trim();
@@ -177,13 +196,16 @@
       }
       throw lastError;
     }
-    async function getResult(peer, session) {
+    async function getResult(peer, session, label, onProgress) {
       const meta = await requestResultValue(peer, 'GET|' + session + '|META');
       const match = /^META\|(\d+)$/.exec(meta);
       if (!match) throw new Error('結果資料中繼資訊格式錯誤：' + meta);
+      const totalChunks = Number(match[1]);
+      onProgress(0, totalChunks);
       let payload = '';
-      for (let index = 0; index < Number(match[1]); index++) {
+      for (let index = 0; index < totalChunks; index++) {
         payload += await requestResultValue(peer, 'GET|' + session + '|' + index);
+        onProgress(index + 1, totalChunks);
       }
       const result = JSON.parse(payload);
       if (result.session !== session) throw new Error('收到的測試編號不符。');
@@ -256,16 +278,28 @@
       }));
       if (!fetchingResults && states.every(value => value.startsWith('DONE|'))) {
         fetchingResults = true;
-        byId('chartState').textContent = '正在從兩台 Pi 讀取角度資料…';
+        refreshButtons();
+        updateTransfer('測試完成，正在讀取資料', '正在從正面 Pi 讀取角度資料。請保持頁面開啟，不要關閉或切換此頁。', 0, true);
+        byId('chartState').textContent = '正在讀取兩台 Pi 的角度資料…';
         try {
           // 共用一個手機藍牙介面時，逐台下載比同時大量讀取穩定。
-          const frontData = await getResult(peers.front, activeSession);
-          byId('chartState').textContent = '正面資料已讀取，正在讀取側面資料…';
-          const sideData = await getResult(peers.side, activeSession);
+          const session = activeSession;
+          const frontData = await getResult(peers.front, session, '正面', (done, total) => {
+            const pct = total ? done / total * 50 : 0;
+            updateTransfer('正在讀取資料：正面 Pi', total ? `正面資料 ${done}/${total} 包；完成後會接著讀取側面資料。請保持頁面開啟。` : '正在準備讀取正面資料…', pct, true);
+          });
+          byId('chartState').textContent = '正面資料讀取完成，正在讀取側面資料…';
+          updateTransfer('正面資料讀取完成', '正在從側面 Pi 讀取角度資料。請繼續保持頁面開啟。', 50, true);
+          const sideData = await getResult(peers.side, session, '側面', (done, total) => {
+            const pct = 50 + (total ? done / total * 50 : 0);
+            updateTransfer('正在讀取資料：側面 Pi', total ? `側面資料 ${done}/${total} 包。請保持頁面開啟。` : '正在準備讀取側面資料…', pct, true);
+          });
           showResults(frontData, sideData);
+          updateTransfer('資料讀取完成，折線圖已產生', '正面和側面資料都已載入。現在可以查看角度卡片與折線圖。', 100, false);
           log('兩台分析完成，角度資料已載入並繪圖。影片與 Excel 保存在各自 Pi 的資料夾。');
         } catch (error) {
           byId('chartState').textContent = '讀取結果失敗：' + error.message;
+          updateTransfer('資料讀取失敗', error.message + ' 請確認兩台 Pi 仍連線，再重新測試。', 0, false);
           log('分析已完成，但讀取角度資料失敗：' + error.message);
         }
         activeSession = null;
@@ -274,9 +308,16 @@
         if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
       } else if (states.every(value => value.startsWith('STOPPED'))) {
         log('兩台已停止；此次未產生完整測試圖表。');
+        updateTransfer('測試已停止', '本次測試未完整結束，因此沒有載入完整角度圖。', 0, false);
         activeSession = null;
         refreshButtons();
         if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+      }
+      if (activeSession && !states.every(value => value.startsWith('DONE|')) && !states.every(value => value.startsWith('STOPPED'))) {
+        const doneCount = states.filter(value => value.startsWith('DONE|')).length;
+        if (doneCount === 1) updateTransfer('等待另一台 Pi 完成', '一台已完成分析，另一台仍在處理。完成後會自動讀取資料；請保持此頁開啟。', null, true);
+        else if (states.some(value => value.startsWith('RECORDING|'))) updateTransfer('兩台正在分析', '測試正在進行。結束後手機會自動讀取角度資料並繪圖，請保持此頁開啟。', null, true);
+        else updateTransfer('兩台正在準備測試', 'Pi 正在載入模型與相機。預約時間到後開始分析，請保持此頁開啟。', null, true);
       }
     }
 
@@ -342,6 +383,7 @@
       const side = peers.side;
       if (!front || !side || !front.device.gatt.connected || !side.device.gatt.connected) return;
       byId('start').disabled = true;
+      updateTransfer('正在準備同步測試', '正在校準兩台 Pi 的開始時間，請保持此頁開啟。', null, true);
       try {
         log('正在透過藍牙估算兩台樹莓派的時鐘差…');
         const offsets = await Promise.all([estimateClockOffset(front), estimateClockOffset(side)]);
@@ -359,12 +401,14 @@
         }
         activeSession = session;
         log('兩台均已收到預約。預計手機時間 ' + new Date(phoneStartAt).toLocaleTimeString() + ' 開始；時鐘差估算約 ' + Math.round(offsets[0]) + ' ms / ' + Math.round(offsets[1]) + ' ms。');
+        updateTransfer('測試已預約', '兩台 Pi 將在約 15 秒後開始。分析完成後手機會自動讀取資料並繪圖；請不要關閉此頁。', null, true);
         refreshButtons();
         if (statusTimer) clearInterval(statusTimer);
         statusTimer = setInterval(pollStatuses, 1000);
         await pollStatuses();
       } catch (error) {
         log('開始失敗：' + error.message);
+        updateTransfer('同步測試未開始', error.message, 0, false);
         refreshButtons();
       }
     }
